@@ -585,7 +585,7 @@ loadDB();
 /* ---------- BACKEND v1: optional API connection ---------- */
 // Set this in Admin > Settings, or edit here. Empty = demo-only (localStorage).
 // Example local backend: http://localhost:4000
-const DEFAULT_API_BASE = ""; // Render URL pawar por ekhane bosano hobe, jemon: https://demo-shop-backend.onrender.com
+const DEFAULT_API_BASE = "https://demo-shop-qnze.onrender.com"; // Render live backend URL
 let API_BASE = (typeof localStorage !== "undefined" && localStorage.getItem("demo-shop-api")) || DEFAULT_API_BASE;
 let API_TOKEN = (typeof localStorage !== "undefined" && localStorage.getItem("demo-shop-token")) || "";
 const apiUrl = (p) => API_BASE.replace(/\/$/, "") + p;
