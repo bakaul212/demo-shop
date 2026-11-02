@@ -1,0 +1,1 @@
+{"dependencies":{"express":"^4.19.2"},"description":"Demo Shop backend attempt: Express API with JSON-file database. No real payment or courier keys are included.","main":"server.js","name":"demo-shop-backend","scripts":{"dev":"node server.js","start":"node server.js"},"version":"1.0.0"}
