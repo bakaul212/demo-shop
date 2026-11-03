@@ -364,6 +364,7 @@ select.status-sel{border:1.5px solid var(--line);border-radius:8px;padding:6px 8
     <button data-nav="flash">ফ্ল্যাশ সেল</button>
     <button data-nav="about">আমাদের সম্পর্কে</button>
     <button data-nav="contact">যোগাযোগ</button>
+    <button data-nav="account">আমার অ্যাকাউন্ট</button>
     <button data-nav="admin" class="adminlink">অ্যাডমিন প্যানেল</button>
   </div></nav>
 </header>
@@ -588,6 +589,10 @@ loadDB();
 const DEFAULT_API_BASE = "https://demo-shop-qnze.onrender.com"; // Render live backend URL
 let API_BASE = (typeof localStorage !== "undefined" && localStorage.getItem("demo-shop-api")) || DEFAULT_API_BASE;
 let API_TOKEN = (typeof localStorage !== "undefined" && localStorage.getItem("demo-shop-token")) || "";
+let CUSTOMER_TOKEN="";
+try{ CUSTOMER_TOKEN=localStorage.getItem("demo-shop-customer-token")||""; }catch(e){}
+let currentCustomer=null;
+try{ currentCustomer=JSON.parse(localStorage.getItem("demo-shop-customer")||"null"); }catch(e){ currentCustomer=null; }
 const apiUrl = (p) => API_BASE.replace(/\/$/, "") + p;
 function applyBackendPublic(d) {
   if (d.settings) Object.assign(DB.settings, d.settings);
@@ -601,7 +606,12 @@ async function loadFromBackend() {
 }
 function syncOrderToBackend(order) {
   if (!API_BASE) return;
-  try { fetch(apiUrl("/api/orders/sync"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(order), keepalive: true }).catch(() => {}); } catch (e) {}
+  try {
+    if (currentCustomer) { order.customerId = currentCustomer.id; order.customerEmail = currentCustomer.email; }
+    const hdrs = { "Content-Type": "application/json" };
+    if (CUSTOMER_TOKEN) hdrs.Authorization = "Bearer " + CUSTOMER_TOKEN;
+    fetch(apiUrl("/api/orders/sync"), { method: "POST", headers: hdrs, body: JSON.stringify(order), keepalive: true }).catch(() => {});
+  } catch (e) {}
 }
 let _lastAdminSyncJson = "";
 function syncAdminToBackend() {
@@ -618,7 +628,7 @@ function syncAdminToBackend() {
 
 /* ==================== routing ==================== */
 function setNav(name){ document.querySelectorAll("#mainNav button[data-nav]").forEach(b=>b.classList.toggle("on", b.dataset.nav===name)); }
-function go(view, arg){ window.scrollTo({top:0}); ({home:renderHome, shop:renderShop, flash:renderFlash, product:renderProduct, cart:renderCart, checkout:renderCheckout, landing:renderLanding, track:renderTrack, about:renderAbout, contact:renderContact, admin:renderAdmin}[view]||renderHome)(arg); }
+function go(view, arg){ window.scrollTo({top:0}); ({home:renderHome, shop:renderShop, flash:renderFlash, product:renderProduct, cart:renderCart, checkout:renderCheckout, landing:renderLanding, track:renderTrack, about:renderAbout, contact:renderContact, admin:renderAdmin, account:renderAccount}[view]||renderHome)(arg); }
 document.querySelectorAll("#mainNav button").forEach(b=>b.addEventListener("click",()=>go(b.dataset.nav)));
 $("#logoBtn").addEventListener("click",e=>{e.preventDefault();go("home");});
 $("#cartBtn").addEventListener("click",()=>go("cart"));
@@ -901,6 +911,7 @@ function renderCheckout(prefill){
   </div>`;
   refreshSummary();
   $("#coForm").addEventListener("submit", placeOrder);
+  if (currentCustomer) { try { if (!$("#coName").value) $("#coName").value = currentCustomer.name || ""; if (!$("#coPhone").value && currentCustomer.phone) $("#coPhone").value = currentCustomer.phone; } catch (e) {} }
 }
 function paySel(r){ r.closest(".panel").querySelectorAll('input[name="pay"]').forEach(x=>x.closest(".radio-card").classList.toggle("on", x.checked)); }
 function coSetArea(a){ coArea=a; $("#areaIn").classList.toggle("on",a==="inside"); $("#areaOut").classList.toggle("on",a==="outside"); refreshSummary(); }
@@ -1114,6 +1125,57 @@ const STATUSES=["Pending","Confirmed","Processing","Shipped","Delivered","Cancel
 let adminTab="dashboard";
 function isStaff(){ return currentUser && currentUser.role==="Staff"; }
 function guard(){ if(isStaff()){ toast("Staff অ্যাকাউন্টে শুধু দেখার অনুমতি আছে — এই কাজটি Admin করতে পারবেন"); return true; } return false; }
+
+
+/* ==================== CUSTOMER ACCOUNT (v2) ==================== */
+function renderAccount(){
+  setNav("account");
+  if(!API_BASE){
+    app.innerHTML=`<div class="panel admin-login"><h2 style="text-align:center">আমার অ্যাকাউন্ট</h2><p class="note" style="text-align:center">অ্যাকাউন্ট খুলতে ব্যাকএন্ড সংযোগ লাগবে। লাইভ সাইটে এটি ইতিমধ্যে সংযুক্ত আছে।</p></div>`;
+    return;
+  }
+  if(!currentCustomer){
+    app.innerHTML=`<div class="form-grid">
+      <div class="panel"><h2>রেজিস্টার করুন</h2><p class="note">নতুন অ্যাকাউন্ট খুলুন। আপনার তথ্য ব্যাকএন্ডে সংরক্ষিত হবে (MongoDB থাকলে Atlas-এ)।</p>
+        <form id="regForm" novalidate>
+          <div class="field"><label>আপনার নাম *</label><input id="rgName" placeholder="যেমন: মোঃ রাকিব হাসান"/></div>
+          <div class="field"><label>ইমেইল *</label><input id="rgEmail" type="email" placeholder="you@example.com"/></div>
+          <div class="field"><label>মোবাইল (ঐচ্ছিক)</label><input id="rgPhone" inputmode="tel" placeholder="01XXXXXXXXX"/></div>
+          <div class="field"><label>পাসওয়ার্ড * (কমপক্ষে ৬ অক্ষর)</label><input id="rgPass" type="password" placeholder="••••••••"/></div>
+          <div id="rgErr"></div>
+          <button class="btn btn-brand btn-block" type="submit">অ্যাকাউন্ট খুলুন</button>
+        </form></div>
+      <div class="panel"><h2>লগইন করুন</h2><p class="note">আগে অ্যাকাউন্ট খুলে থাকলে এখান থেকে লগইন করুন।</p>
+        <form id="custLoginForm" novalidate>
+          <div class="field"><label>ইমেইল *</label><input id="clEmail" type="email" placeholder="you@example.com"/></div>
+          <div class="field"><label>পাসওয়ার্ড *</label><input id="clPass" type="password" placeholder="••••••••"/></div>
+          <div id="clErr"></div>
+          <button class="btn btn-brand btn-block" type="submit">লগইন করুন</button>
+        </form></div>
+    </div>`;
+    const saveCust=(d)=>{ CUSTOMER_TOKEN=d.token; currentCustomer=d.user; try{ localStorage.setItem("demo-shop-customer-token", CUSTOMER_TOKEN); localStorage.setItem("demo-shop-customer", JSON.stringify(d.user)); }catch(e){} toast("স্বাগতম, "+d.user.name); renderAccount(); };
+    const showErr=(id,msg)=>{ const el=$(id); if(el) el.innerHTML='<p style="color:var(--danger);font-weight:600;margin-bottom:10px">'+esc(msg)+'</p>'; };
+    $("#regForm").addEventListener("submit", async e=>{ e.preventDefault();
+      try{ const r=await fetch(apiUrl("/api/customers/register"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:$("#rgName").value.trim(),email:$("#rgEmail").value.trim(),password:$("#rgPass").value,phone:$("#rgPhone").value.trim()})});
+        const d=await r.json(); if(!r.ok){ showErr("#rgErr", d.error||"রেজিস্টার করা যায়নি"); return; } saveCust(d);
+      }catch(err){ showErr("#rgErr","ব্যাকএন্ডে সংযোগ করা যাচ্ছে না। কিছুক্ষণ পর আবার চেষ্টা করুন।"); } });
+    $("#custLoginForm").addEventListener("submit", async e=>{ e.preventDefault();
+      try{ const r=await fetch(apiUrl("/api/customers/login"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:$("#clEmail").value.trim(),password:$("#clPass").value})});
+        const d=await r.json(); if(!r.ok){ showErr("#clErr", d.error||"লগইন মেলেনি"); return; } saveCust(d);
+      }catch(err){ showErr("#clErr","ব্যাকএন্ডে সংযোগ করা যাচ্ছে না। কিছুক্ষণ পর আবার চেষ্টা করুন।"); } });
+    return;
+  }
+  app.innerHTML=`<div class="panel admin-login" style="max-width:640px"><h2 style="text-align:center">আমার অ্যাকাউন্ট</h2>
+    <p style="text-align:center"><b>${esc(currentCustomer.name)}</b><br/>${esc(currentCustomer.email)}${currentCustomer.phone?'<br/>'+esc(currentCustomer.phone):''}</p>
+    <button class="btn btn-ghost btn-block" onclick="customerLogout()">লগআউট</button>
+    <h3 style="margin-top:18px">আমার অর্ডার</h3><div id="myOrders">লোড হচ্ছে…</div></div>`;
+  (async()=>{ try{ const r=await fetch(apiUrl("/api/customers/my-orders"),{headers:{Authorization:"Bearer "+CUSTOMER_TOKEN}});
+    const list=await r.json(); const el=$("#myOrders"); if(!el) return;
+    if(!Array.isArray(list)||!list.length){ el.innerHTML='<p class="note">এখনো কোনো অর্ডার নেই।</p>'; return; }
+    el.innerHTML=list.map(o=>`<div class="sumrow"><span><b>${esc(o.id)}</b> · ${esc(o.status||"")}</span><span>${money(o.total||0)}</span></div>`).join("");
+  }catch(e){ const el=$("#myOrders"); if(el) el.innerHTML='<p class="note">অর্ডার লোড করা যায়নি।</p>'; } })();
+}
+function customerLogout(){ currentCustomer=null; CUSTOMER_TOKEN=""; try{ localStorage.removeItem("demo-shop-customer-token"); localStorage.removeItem("demo-shop-customer"); }catch(e){} toast("লগআউট হয়েছে"); go("home"); }
 
 function renderAdmin(){
   setNav("admin");

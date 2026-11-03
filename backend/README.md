@@ -1,8 +1,34 @@
-# Demo Shop Backend v1
+# Demo Shop Backend v2 - MongoDB Atlas + customer accounts
 
 Backend attempt for Demo Shop. Frontend is the existing single HTML shop;
 this API gives it a shared database, real login, and server-side order,
 coupon, dashboard and export logic.
+
+## What's new in v2
+
+- MongoDB Atlas: set `MONGODB_URI` (and `MONGODB_DB=demo-shop`) as an
+  environment variable. Shop data and customer accounts are then stored
+  in Atlas collections (`settings`, `categories`, `products`, `coupons`,
+  `orders`, `messages`, `customers`). Without `MONGODB_URI`, or if Atlas
+  cannot be reached, the server keeps working with `data/db.json`.
+  Never put a real connection string in code, in the frontend, or in chat.
+- Customer accounts: `POST /api/customers/register`,
+  `POST /api/customers/login`, `GET /api/customers/me`,
+  `GET /api/customers/my-orders`. Passwords are stored only as scrypt
+  hashes. Orders placed while logged in are linked to the customer
+  (`customerId` / `customerEmail`), so "My Orders" works on any device.
+- Health now reports the database mode: `/api/health` returns
+  `db: "mongodb"` or `db: "json"`.
+
+## Atlas + Render setup (no secret in chat)
+
+1. Atlas: create a database user, allow Network Access for Render
+   (`0.0.0.0/0` for this assignment demo), and copy the connection string.
+2. Render dashboard > demo-shop > Environment: add `MONGODB_URI` with
+   that string (replace `<password>` with the Atlas database user
+   password, only in the Render dashboard) and `MONGODB_DB=demo-shop`,
+   then Manual Deploy > Deploy latest commit.
+3. Check `/api/health` - it should show `db: "mongodb"`.
 
 ## Run in VS Code (5 minutes)
 

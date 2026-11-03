@@ -35,3 +35,9 @@ npm start
 Frontend: open `frontend/index.html`, or serve the `frontend` folder.
 Set Backend API URL in Admin > Settings to `http://localhost:4000`
 for local testing.
+
+## Backend v2 (2026-11-03)
+
+- MongoDB Atlas support via `MONGODB_URI` env (JSON fallback if unset).
+- Customer register/login + My Orders (`/api/customers/*`, scrypt password hashes).
+- Live backend: https://demo-shop-qnze.onrender.com - set `MONGODB_URI` in the Render dashboard only, never in chat or code.

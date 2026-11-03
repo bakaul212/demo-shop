@@ -1,4 +1,8 @@
-// Demo Shop backend v1 - Express API with a JSON-file database.
+// Demo Shop backend v2 - Express API with MongoDB Atlas (optional) + JSON fallback.
+// If MONGODB_URI is set, shop data + customer accounts are stored in MongoDB
+// (Atlas). If it is not set, or MongoDB cannot be reached, the server keeps
+// working with the JSON-file database. Never put a real MONGODB_URI in code
+// or in the frontend: set it only as an environment variable (Render dashboard).
 // Run: npm install && npm start  (then http://localhost:4000/api/health)
 // This is a backend ATTEMPT for a school demo. Real bKash / SSLCommerz /
 // Steadfast / Pathao integrations are stubs below: they return a clear
@@ -9,12 +13,68 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { seed } = require("./seed");
+let MongoClient = null;
+try { ({ MongoClient } = require("mongodb")); } catch (e) { console.warn("mongodb driver not installed, using JSON database only"); }
 
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || "change-this-secret-before-any-public-use";
 const SALT = process.env.PASSWORD_SALT || "demo-shop-salt-change-me";
 const DATA_DIR = path.join(__dirname, "data");
 const DATA_FILE = path.join(DATA_DIR, "db.json");
+
+
+const MONGODB_URI = process.env.MONGODB_URI || "";
+const MONGODB_DB = process.env.MONGODB_DB || "demo-shop";
+let mongoClient = null;
+let mongoDb = null;
+let mongoReady = false;
+function mongoSave(d) {
+  if (!mongoReady || !mongoDb || !d) return Promise.resolve(false);
+  const withId = (arr, key) => (arr || []).map((x, i) => ({ ...x, _id: x[key] !== undefined ? x[key] : ("row" + i) }));
+  const run = async () => {
+    await mongoDb.collection("settings").replaceOne({ _id: "main" }, { _id: "main", ...d.settings, nextOrderSeq: d.nextOrderSeq }, { upsert: true });
+    for (const [name, arr, key] of [["categories", d.categories, "id"], ["products", d.products, "id"], ["coupons", d.coupons, "code"], ["orders", d.orders, "id"], ["messages", d.messages, null], ["customers", d.customers || [], "id"]]) {
+      const col = mongoDb.collection(name);
+      await col.deleteMany({});
+      const docs = withId(arr, key);
+      if (docs.length) await col.insertMany(docs);
+    }
+    return true;
+  };
+  return run().catch((e) => { console.error("MongoDB save failed", e.message); return false; });
+}
+async function initMongo(current) {
+  if (!MONGODB_URI || !MongoClient) return current;
+  try {
+    mongoClient = new MongoClient(MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
+    await mongoClient.connect();
+    mongoDb = mongoClient.db(MONGODB_DB);
+    const prodCount = await mongoDb.collection("products").countDocuments();
+    if (prodCount > 0) {
+      const strip = (docs) => docs.map((x) => { const y = { ...x }; delete y._id; return y; });
+      const settingsDoc = await mongoDb.collection("settings").findOne({ _id: "main" });
+      const out = { ...current };
+      if (settingsDoc) { const { _id, nextOrderSeq, ...rest } = settingsDoc; out.settings = rest; if (nextOrderSeq) out.nextOrderSeq = nextOrderSeq; }
+      out.categories = strip(await mongoDb.collection("categories").find({}).toArray());
+      out.products = strip(await mongoDb.collection("products").find({}).toArray());
+      out.coupons = strip(await mongoDb.collection("coupons").find({}).toArray());
+      out.orders = strip(await mongoDb.collection("orders").find({}).toArray());
+      out.messages = strip(await mongoDb.collection("messages").find({}).toArray());
+      out.customers = strip(await mongoDb.collection("customers").find({}).toArray());
+      mongoReady = true;
+      console.log("MongoDB connected, loaded data from Atlas");
+      return out;
+    }
+    mongoReady = true;
+    await mongoSave(current);
+    console.log("MongoDB connected, seeded Atlas with current data");
+    return current;
+  } catch (e) {
+    console.error("MongoDB connection failed, using JSON database:", e.message);
+    mongoReady = false; mongoClient = null; mongoDb = null;
+    return current;
+  }
+}
 
 function loadDb() {
   try {
@@ -27,8 +87,10 @@ function loadDb() {
 function saveDb(d) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(DATA_FILE, JSON.stringify(d, null, 2), "utf8");
+  mongoSave(d).catch(() => {});
 }
 let db = loadDb();
+db.customers = db.customers || [];
 
 // Demo users: only SHA-256 hashes are stored here, not plain passwords.
 // Hash = sha256(SALT + password). Demo: admin123 / staff123.
@@ -38,10 +100,18 @@ const USERS = [
   { email: "staff@demo.shop", passHash: "49efaa12b9353a26e75358420204c57240b21ff1b8adc99918d6af16048e2928", role: "Staff" },
 ];
 const hashPw = (pw) => crypto.createHash("sha256").update(SALT + pw).digest("hex");
+// Customer passwords: scrypt with a random salt per account (never store plain text).
+const hashCustomerPw = (pw) => { const salt = crypto.randomBytes(16).toString("hex"); const hash = crypto.scryptSync(pw, salt, 64).toString("hex"); return salt + ":" + hash; };
+const verifyCustomerPw = (pw, stored) => { try { const [salt, hash] = String(stored).split(":"); const test = crypto.scryptSync(pw, salt, 64); const want = Buffer.from(hash, "hex"); return test.length === want.length && crypto.timingSafeEqual(test, want); } catch (e) { return false; } };
+const validEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(e || "").trim());
+const publicCustomer = (c) => c ? { id: c.id, name: c.name, email: c.email, phone: c.phone || "", createdAt: c.createdAt } : null;
 const b64u = (s) => Buffer.from(s).toString("base64url");
 const signToken = (u) => {
   const head = b64u(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-  const body = b64u(JSON.stringify({ email: u.email, role: u.role, exp: Date.now() + 24 * 3600 * 1000 }));
+  const payload = { email: u.email, role: u.role, exp: Date.now() + 24 * 3600 * 1000 };
+  if (u.id) payload.id = u.id;
+  if (u.name) payload.name = u.name;
+  const body = b64u(JSON.stringify(payload));
   const sig = crypto.createHmac("sha256", JWT_SECRET).update(head + "." + body).digest("base64url");
   return head + "." + body + "." + sig;
 };
@@ -60,6 +130,7 @@ function authUser(req) {
 }
 const requireAuth = (req, res, next) => { const u = authUser(req); if (!u) return res.status(401).json({ error: "Login required" }); req.user = u; next(); };
 const requireAdmin = (req, res, next) => { const u = authUser(req); if (!u) return res.status(401).json({ error: "Login required" }); if (u.role !== "Admin") return res.status(403).json({ error: "Staff can only view, cannot edit" }); req.user = u; next(); };
+const requireCustomer = (req, res, next) => { const u = authUser(req); if (!u) return res.status(401).json({ error: "Login required" }); if (u.role !== "Customer") return res.status(403).json({ error: "Customer login required" }); req.user = u; next(); };
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -85,7 +156,7 @@ const couponDiscount = (code, subtotal, delivery) => {
 const csvEscape = (v) => '"' + String(v ?? "").replace(/"/g, '""') + '"';
 const toCsv = (rows) => "\ufeff" + rows.map((r) => r.map(csvEscape).join(",")).join("\n");
 
-app.get("/api/health", (req, res) => res.json({ ok: true, service: "demo-shop-backend", version: "1.0.0" }));
+app.get("/api/health", (req, res) => res.json({ ok: true, service: "demo-shop-backend", version: "2.0.0", db: mongoReady ? "mongodb" : "json", mongo: mongoReady }));
 app.post("/api/auth/login", (req, res) => {
   const { email, password } = req.body || {};
   const u = USERS.find((x) => x.email === String(email || "").toLowerCase() && x.passHash === hashPw(password || ""));
@@ -93,6 +164,38 @@ app.post("/api/auth/login", (req, res) => {
   res.json({ token: signToken(u), user: { email: u.email, role: u.role } });
 });
 app.get("/api/auth/me", requireAuth, (req, res) => res.json({ user: req.user }));
+
+// Customer accounts (stored in MongoDB when MONGODB_URI is set, otherwise JSON).
+// Passwords are stored only as scrypt hashes, never in plain text.
+app.post("/api/customers/register", async (req, res) => {
+  const { name, email, password, phone } = req.body || {};
+  if (!name || String(name).trim().length < 3) return res.status(400).json({ error: "Full name required" });
+  if (!validEmail(email)) return res.status(400).json({ error: "Valid email required" });
+  if (!password || String(password).length < 6) return res.status(400).json({ error: "Password must be at least 6 characters" });
+  if (phone && !validPhone(phone)) return res.status(400).json({ error: "Valid 11-digit mobile number required (01...)" });
+  const em = String(email).trim().toLowerCase();
+  if (db.customers.some((c) => c.email === em)) return res.status(409).json({ error: "This email is already registered. Please login instead." });
+  const c = { id: "CU" + Date.now(), name: String(name).trim(), email: em, phone: phone ? String(phone).trim() : "", passHash: hashCustomerPw(String(password)), createdAt: new Date().toISOString() };
+  db.customers.push(c); saveDb(db); await mongoSave(db);
+  const user = publicCustomer(c);
+  res.status(201).json({ token: signToken({ ...user, role: "Customer" }), user });
+});
+app.post("/api/customers/login", (req, res) => {
+  const { email, password } = req.body || {};
+  const c = db.customers.find((x) => x.email === String(email || "").trim().toLowerCase());
+  if (!c || !verifyCustomerPw(String(password || ""), c.passHash)) return res.status(401).json({ error: "Email or password did not match" });
+  const user = publicCustomer(c);
+  res.json({ token: signToken({ ...user, role: "Customer" }), user });
+});
+app.get("/api/customers/me", requireCustomer, (req, res) => {
+  const c = db.customers.find((x) => x.id === req.user.id) || db.customers.find((x) => x.email === req.user.email);
+  if (!c) return res.status(404).json({ error: "Account not found" });
+  res.json({ user: publicCustomer(c) });
+});
+app.get("/api/customers/my-orders", requireCustomer, (req, res) => {
+  const list = db.orders.filter((o) => o.customerId === req.user.id || (o.customer && String(o.customer.email || "").toLowerCase() === String(req.user.email).toLowerCase()));
+  res.json(list);
+});
 
 // Public shop data (published products only). Admin can get all via /api/products with a token.
 app.get("/api/public", (req, res) => {
@@ -214,6 +317,8 @@ app.post("/api/orders", (req, res) => {
     // Accept both frontend shape {customer, area, items} and a simple shape.
     const payload = { ...b, customer: b.customer || { name: b.name, phone: b.phone, address: b.address }, area: b.area || "inside" };
     const order = createOrderFromPayload(payload);
+    const cu = authUser(req);
+    if (cu && cu.role === "Customer") { order.customerId = cu.id; order.customerEmail = cu.email; saveDb(db); }
     res.status(201).json(order);
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
@@ -321,9 +426,12 @@ app.post("/api/orders/sync", (req, res) => {
     const ex = db.orders.find((x) => x.id === o.id);
     if (ex) return res.json(ex);
     if (!Array.isArray(o.items) || !o.items.length) return res.status(400).json({ error: "Order items required" });
+    const cu = authUser(req);
+    if (cu && cu.role === "Customer") { o.customerId = cu.id; o.customerEmail = cu.email; }
+    if (o.customerEmail && !o.customerId) { const cc = db.customers.find((x) => x.email === String(o.customerEmail).toLowerCase()); if (cc) o.customerId = cc.id; }
     o.items.forEach((i) => { const p = db.products.find((x) => x.id === Number(i.pid)); if (p) { p.stock = Math.max(0, p.stock - (Number(i.qty) || 1)); p.sold += Number(i.qty) || 1; } });
     db.orders.unshift(o); saveDb(db); res.status(201).json(o);
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 app.use((req, res) => res.status(404).json({ error: "Route not found: " + req.method + " " + req.path }));
-app.listen(PORT, () => console.log("Demo Shop backend running on http://localhost:" + PORT));
+initMongo(db).then((loaded) => { db = loaded; db.customers = db.customers || []; app.listen(PORT, () => console.log("Demo Shop backend running on http://localhost:" + PORT + " (db=" + (mongoReady ? "mongodb" : "json") + ")")); }).catch((e) => { console.error("Mongo init error, starting with JSON database", e.message); app.listen(PORT, () => console.log("Demo Shop backend running on http://localhost:" + PORT)); });
